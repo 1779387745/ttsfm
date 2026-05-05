@@ -10,6 +10,7 @@ MODULE_NAME = "ttsfm_web.app"
 
 
 def load_web_app(monkeypatch, **env):
+    env = {"DEBUG": "true", **env}
     for key, value in env.items():
         if value is None:
             monkeypatch.delenv(key, raising=False)

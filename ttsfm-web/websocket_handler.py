@@ -7,6 +7,7 @@ At least this will make it FEEL faster.
 
 import base64
 import logging
+import os
 import time
 import uuid
 from datetime import datetime
@@ -21,6 +22,35 @@ from ttsfm.utils import split_text_by_length
 logger = logging.getLogger(__name__)
 
 
+def _extract_socket_api_key(auth: Any) -> Optional[str]:
+    """Resolve API key from Socket.IO auth payload and the HTTP handshake."""
+    if isinstance(auth, dict):
+        for key in ("api_key", "token", "bearer"):
+            val = auth.get(key)
+            if not isinstance(val, str):
+                continue
+            stripped = val.strip()
+            if not stripped:
+                continue
+            if key == "bearer" and stripped.lower().startswith("bearer "):
+                return stripped[7:].strip()
+            return stripped
+
+    auth_header = request.headers.get("Authorization")
+    if auth_header and auth_header.startswith("Bearer "):
+        return auth_header[7:].strip()
+
+    x_key = request.headers.get("X-API-Key")
+    if x_key and x_key.strip():
+        return x_key.strip()
+
+    q_key = request.args.get("api_key")
+    if q_key and q_key.strip():
+        return q_key.strip()
+
+    return None
+
+
 class WebSocketTTSHandler:
     """
     Handles WebSocket connections for streaming TTS generation.
@@ -28,9 +58,16 @@ class WebSocketTTSHandler:
     Because your users can't wait 2 seconds for a complete response.
     """
 
-    def __init__(self, socketio: SocketIO, client_factory: Callable[[], TTSClient]):
+    def __init__(
+        self,
+        socketio: SocketIO,
+        client_factory: Callable[[], TTSClient],
+        auth_context: Optional[Dict[str, Any]] = None,
+    ):
         self.socketio = socketio
         self._client_factory = client_factory
+        self._auth = auth_context or {}
+        self._stream_chunk_delay = float(os.environ.get("TTSFM_STREAM_CHUNK_DELAY_SECONDS", "0"))
         self.active_sessions: Dict[str, Dict[str, Any]] = {}
         self._tasks: Dict[str, Dict[str, Any]] = {}
 
@@ -41,9 +78,38 @@ class WebSocketTTSHandler:
         """Register all WebSocket event handlers."""
 
         @self.socketio.on("connect")
-        def handle_connect():
+        def handle_connect(auth=None):
             """Handle new WebSocket connection."""
             session_id = request.sid
+
+            if self._auth.get("require_api_key"):
+                if not self._auth.get("api_keys_configured"):
+                    logger.warning(
+                        "WebSocket connect rejected: API key required but none configured"
+                    )
+                    return False
+
+                client_ip = request.remote_addr or "unknown"
+                is_rate_limited = self._auth.get("is_rate_limited")
+                if callable(is_rate_limited) and is_rate_limited(client_ip):
+                    logger.warning(
+                        "WebSocket connect rejected: auth rate limited for %s", client_ip
+                    )
+                    return False
+
+                is_valid = self._auth.get("is_valid_api_key")
+                provided = _extract_socket_api_key(auth)
+                if not callable(is_valid) or not is_valid(provided):
+                    register_failed = self._auth.get("register_failed")
+                    if callable(register_failed):
+                        register_failed(client_ip)
+                    logger.warning("WebSocket connect rejected: invalid or missing API key")
+                    return False
+
+                reset_attempts = self._auth.get("reset_failed_attempts")
+                if callable(reset_attempts):
+                    reset_attempts(client_ip)
+
             self.active_sessions[session_id] = {
                 "connected_at": datetime.now(),
                 "request_count": 0,
@@ -73,12 +139,46 @@ class WebSocketTTSHandler:
                 'text': str,
                 'voice': str,
                 'format': str,
-                'chunk_size': int (optional, default 1024 chars),
-                'instructions': str (optional, voice modulation instructions)
+                'chunk_size': int (optional, default 1000 chars, max 1000),
+                'instructions': str (optional, voice modulation instructions),
+                'speed': float (optional),
+                'api_key': str (optional, when REQUIRE_API_KEY is true)
             }
             """
+            if not isinstance(data, dict):
+                return
+
             session_id = request.sid
             request_id = data.get("request_id", str(uuid.uuid4()))
+
+            if self._auth.get("require_api_key"):
+                if not self._auth.get("api_keys_configured"):
+                    self._emit_error(
+                        session_id,
+                        request_id,
+                        "Authentication service is unavailable",
+                    )
+                    return
+
+                client_ip = request.remote_addr or "unknown"
+                is_rate_limited = self._auth.get("is_rate_limited")
+                if callable(is_rate_limited) and is_rate_limited(client_ip):
+                    self._emit_error(session_id, request_id, "Too many authentication attempts")
+                    return
+
+                is_valid = self._auth.get("is_valid_api_key")
+                raw = (data or {}).get("api_key")
+                provided = raw.strip() if isinstance(raw, str) else None
+                if not callable(is_valid) or not is_valid(provided):
+                    register_failed = self._auth.get("register_failed")
+                    if callable(register_failed):
+                        register_failed(client_ip)
+                    self._emit_error(session_id, request_id, "Authentication failed")
+                    return
+
+                reset_attempts = self._auth.get("reset_failed_attempts")
+                if callable(reset_attempts):
+                    reset_attempts(client_ip)
 
             # Update session info
             if session_id in self.active_sessions:
@@ -132,8 +232,25 @@ class WebSocketTTSHandler:
             text = data.get("text", "")
             voice = data.get("voice", "alloy")
             format_str = data.get("format", "mp3")
-            chunk_size = data.get("chunk_size", 1024)
+            raw_chunk = data.get("chunk_size", 1000)
+            try:
+                chunk_size = int(raw_chunk)
+            except (TypeError, ValueError):
+                self._emit_error(session_id, request_id, "chunk_size must be an integer")
+                return
+            chunk_size = max(1, min(chunk_size, 1000))
             instructions = data.get("instructions", None)  # Voice instructions support!
+            raw_speed = data.get("speed", None)
+            speed: Optional[float] = None
+            if raw_speed is not None:
+                try:
+                    speed = float(raw_speed)
+                except (TypeError, ValueError):
+                    self._emit_error(session_id, request_id, "Invalid speed value")
+                    return
+                if not 0.25 <= speed <= 4.0:
+                    self._emit_error(session_id, request_id, "Speed must be between 0.25 and 4.0")
+                    return
 
             if not text:
                 self._emit_error(session_id, request_id, "No text provided")
@@ -184,6 +301,7 @@ class WebSocketTTSHandler:
                         voice=voice_enum,
                         response_format=format_enum,
                         instructions=instructions,  # Pass voice instructions!
+                        speed=speed,
                         validate_length=False,  # We already chunked it
                     )
                     generation_time = time.time() - start_time
@@ -220,9 +338,8 @@ class WebSocketTTSHandler:
                         room=session_id,
                     )
 
-                    # Small delay to prevent overwhelming the client
-                    # (and to make it feel more "real-time")
-                    self.socketio.sleep(0.1)
+                    if self._stream_chunk_delay > 0:
+                        self.socketio.sleep(self._stream_chunk_delay)
 
                 except Exception as e:
                     logger.error(f"Error generating chunk {i}: {str(e)}")

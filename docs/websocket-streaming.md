@@ -67,7 +67,10 @@ const result = await client.generateSpeech('Hello, WebSocket world!', {
     text: string,          // Text to convert
     voice: string,         // Voice ID (alloy, echo, etc.)
     format: string,        // Audio format (mp3, wav, opus)
-    chunk_size: number     // Optional, default 1024
+    chunk_size: number,    // Optional, default 1024
+    instructions: string,  // Optional, same semantics as REST / OpenAI API
+    speed: number,         // Optional, 0.25–4.0 (applied server-side when supported)
+    api_key: string        // Optional; required when REQUIRE_API_KEY=true
 }
 ```
 
@@ -94,7 +97,8 @@ const result = await client.generateSpeech('Hello, WebSocket world!', {
     request_id: string,
     chunk_index: number,
     total_chunks: number,
-    audio_data: string,    // Hex-encoded audio data
+    audio_data: string,    // Base64-encoded audio bytes
+    encoding: string,      // "base64"
     format: string,
     duration: number,
     generation_time: number,
@@ -147,6 +151,8 @@ const result = await client.generateSpeech('Hello, WebSocket world!', {
 - IE11: Not supported (use polling fallback)
 
 ## Troubleshooting
+
+See also [WebSocket troubleshooting](websocket-troubleshooting.md) for auth, CORS, and proxy notes.
 
 ### Connection Issues
 ```javascript
@@ -209,8 +215,8 @@ client.generateSpeech(text, {
 
 ## Security
 
-- WebSocket connections respect API key authentication if enabled
-- CORS is configured for cross-origin requests
+- When `REQUIRE_API_KEY=true`, connections are rejected unless a valid key is supplied on the Socket.IO handshake (`auth.api_key`) and each `generate_stream` payload must include the same key (defense in depth). Plaintext keys from the environment are compared in constant time; Argon2-hashed entries in `TTSFM_API_KEY_HASHES` still use Argon2 verification.
+- Set `TTSFM_CORS_ORIGINS` to a comma-separated allowlist when you need credentialed cross-origin access; wildcard `*` is not used together with credentials in that configuration.
 - SSL/TLS recommended for production deployments
 
 ## Deployment Notes

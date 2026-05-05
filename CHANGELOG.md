@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+## [3.5.0] - 2026-05-05
+
+### Breaking
+
+- `TTSRequest` and `split_text_by_length` no longer accept `max_length` greater than 1000 (values above the upstream limit used to be clamped; they now raise `ValueError`).
+
+### Fixed
+
+- Web playground: wait for `/api/auth-status` before opening the streaming WebSocket so required API keys are not sent empty; reconnect after API key input when the server requires a key.
+- `AsyncTTSClient`: API key from `TTSFM_API_KEY` / env is now applied to `self.api_key` (was only read into a local variable).
+- WebSocket auth: `bearer` field in Socket.IO `auth` may be a full `Bearer …` string; the prefix is stripped correctly.
+- Sync `generate_speech_batch`: reuse one `requests.Session` per worker thread instead of opening/closing a session per chunk.
+
+### Changed
+
+- GitHub Actions CI runs the test and lint suite on Python **3.9, 3.10, 3.11, and 3.12** (`fail-fast: false`).
+- README (EN/zh): describe openai.fm as the live default upstream; disclaimer no longer implies the upstream or project is unusable.
+
 ## [3.4.2] - 2025-12-17
 
 ### Security

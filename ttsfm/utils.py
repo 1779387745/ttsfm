@@ -12,7 +12,7 @@ import re
 from html import unescape
 from itertools import cycle
 from threading import Lock
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple, Union
 from urllib.parse import urljoin, urlparse
 
 # Configure logging
@@ -244,7 +244,7 @@ def _split_into_sentences(text: str) -> List[str]:
 
 def _split_long_segment(segment: str, max_length: int) -> List[str]:
     """Fallback splitter for oversized segments."""
-    max_length = max(1, min(max_length, 1000))
+    max_length = max(1, max_length)
     if len(segment) <= max_length:
         return [segment]
 
@@ -307,7 +307,10 @@ def split_text_by_length(
     if not text:
         return []
 
-    max_length = max(1, min(max_length, 1000))
+    if max_length < 1:
+        raise ValueError("max_length must be at least 1")
+    if max_length > 1000:
+        raise ValueError("max_length cannot exceed 1000 (upstream TTS limit)")
 
     if len(text) <= max_length:
         return [text]
@@ -428,6 +431,38 @@ def get_random_delay(min_delay: float = 1.0, max_delay: float = 5.0) -> float:
     return base_delay + jitter
 
 
+_SAFE_METADATA_RESPONSE_HEADERS = frozenset(
+    {
+        "cache-control",
+        "content-length",
+        "content-type",
+        "date",
+        "etag",
+        "last-modified",
+        "server",
+        "x-ratelimit-limit",
+        "x-ratelimit-remaining",
+        "x-ratelimit-reset",
+        "x-request-id",
+    }
+)
+
+
+def safe_response_headers_for_metadata(
+    headers: Union[Mapping[str, str], Iterable[Tuple[str, str]]],
+) -> Dict[str, str]:
+    """Subset of HTTP response headers safe to retain in client metadata (no cookies / auth)."""
+    out: Dict[str, str] = {}
+    try:
+        items = headers.items()  # type: ignore[union-attr]
+    except AttributeError:
+        return out
+    for key, value in items:
+        if key.lower() in _SAFE_METADATA_RESPONSE_HEADERS:
+            out[key] = value if isinstance(value, str) else str(value)
+    return out
+
+
 def exponential_backoff(attempt: int, base_delay: float = 1.0, max_delay: float = 60.0) -> float:
     """
     Calculate exponential backoff delay.
@@ -472,6 +507,15 @@ def load_config_from_env(prefix: str = "TTSFM_") -> Dict[str, Any]:
                 config[config_key] = value
 
     return config
+
+
+def resolve_api_key(explicit: Optional[str]) -> Optional[str]:
+    """Use explicit API key when provided; otherwise read ``TTSFM_API_KEY`` via :func:`load_config_from_env`."""
+    if explicit is not None:
+        return explicit
+    env_cfg = load_config_from_env()
+    val = env_cfg.get("api_key")
+    return str(val) if val else None
 
 
 def setup_logging(

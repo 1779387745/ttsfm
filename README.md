@@ -1,7 +1,5 @@
 # TTSFM - Text-to-Speech API Client
 
-> **⚠️ NOTICE: This project is no longer functional as the openai.fm demo website has been shut down.**
-
 > **Language / 语言**: [English](README.md) | [中文](README.zh.md)
 
 [![Docker Pulls](https://img.shields.io/docker/pulls/dbcccc/ttsfm?style=flat-square&logo=docker)](https://hub.docker.com/r/dbcccc/ttsfm)
@@ -29,7 +27,7 @@ TTSFM is a free, OpenAI-compatible text-to-speech API service that provides a co
 - 🔍 **Smart Detection**: Automatic capability detection and helpful error messages
 - 🤖 **OpenAI Compatible**: Drop-in replacement for OpenAI's TTS API
 
-**Key Features in v3.4.0:**
+**Key Features in v3.5.0:**
 - 🎯 Image variant detection (full vs slim Docker images)
 - 🔍 Runtime capabilities API for feature availability checking
 - ⚡ Speed adjustment with ffmpeg-based audio processing

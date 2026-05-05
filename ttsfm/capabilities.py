@@ -7,7 +7,7 @@ system dependencies (primarily ffmpeg availability).
 from __future__ import annotations
 
 import shutil
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 
 class SystemCapabilities:
@@ -88,7 +88,7 @@ class SystemCapabilities:
             return True
         return self.ffmpeg_available
 
-    def get_unavailable_reason(self, feature: str) -> str | None:
+    def get_unavailable_reason(self, feature: str) -> Optional[str]:
         """Get reason why a feature is unavailable.
 
         Args:
@@ -107,7 +107,7 @@ class SystemCapabilities:
 
 
 # Global instance for easy access
-_capabilities_instance: SystemCapabilities | None = None
+_capabilities_instance: Optional[SystemCapabilities] = None
 
 
 def get_capabilities() -> SystemCapabilities:

@@ -140,8 +140,8 @@
                                     class="form-control"
                                     id="max-length-input"
                                     value="1000"
-                                    min="100"
-                                    max="10000"
+                                    min="1"
+                                    max="1000"
                                 >
                                 <div class="form-text">
                                     {{ _('playground.max_length_description') }}
@@ -356,7 +356,7 @@
 <!-- WebSocket TTS Client -->
 <script src="{{ url_for('static', filename='js/websocket-tts.js') }}"></script>
 <!-- Enhanced Playground JavaScript with WebSocket Support -->
-<script type="module" src="{{ url_for('static', filename='js/playground-enhanced-fixed.js') }}"></script>
+<script type="module" src="{{ url_for('static', filename='js/playground.js') }}"></script>
 <script>
     // Additional playground-specific functionality
     console.log('TTSFM Enhanced Playground with WebSocket support loaded successfully!');

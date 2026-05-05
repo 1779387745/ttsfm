@@ -26,7 +26,7 @@ def create_parser() -> argparse.ArgumentParser:
 Examples:
   ttsfm "Hello, world!" --output hello.mp3
   ttsfm "Hello, world!" --voice nova --format wav --output hello.wav
-  ttsfm "Hello, world!" --url http://localhost:7000 --output hello.mp3
+  ttsfm "Hello, world!" --url https://www.openai.fm --output hello.mp3
   ttsfm --text-file input.txt --output speech.mp3
         """,
     )
@@ -78,8 +78,8 @@ Examples:
         "--url",
         "-u",
         type=str,
-        default="http://localhost:7000",
-        help="TTS service URL (default: http://localhost:7000)",
+        default="https://www.openai.fm",
+        help="TTS service URL (default: https://www.openai.fm)",
     )
 
     parser.add_argument("--api-key", "-k", type=str, help="API key for authentication")
@@ -158,33 +158,12 @@ def validate_speed(speed: float) -> float:
 
 def get_voice_enum(voice_str: str) -> Voice:
     """Convert voice string to Voice enum."""
-    voice_map = {
-        "alloy": Voice.ALLOY,
-        "ash": Voice.ASH,
-        "ballad": Voice.BALLAD,
-        "coral": Voice.CORAL,
-        "echo": Voice.ECHO,
-        "fable": Voice.FABLE,
-        "nova": Voice.NOVA,
-        "onyx": Voice.ONYX,
-        "sage": Voice.SAGE,
-        "shimmer": Voice.SHIMMER,
-        "verse": Voice.VERSE,
-    }
-    return voice_map[voice_str.lower()]
+    return Voice(voice_str.lower())
 
 
 def get_format_enum(format_str: str) -> AudioFormat:
     """Convert format string to AudioFormat enum."""
-    format_map = {
-        "mp3": AudioFormat.MP3,
-        "opus": AudioFormat.OPUS,
-        "aac": AudioFormat.AAC,
-        "flac": AudioFormat.FLAC,
-        "wav": AudioFormat.WAV,
-        "pcm": AudioFormat.PCM,
-    }
-    return format_map[format_str.lower()]
+    return AudioFormat(format_str.lower())
 
 
 def handle_long_text(  # type: ignore[no-untyped-def]

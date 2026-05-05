@@ -7,6 +7,7 @@ for the TTSFM text-to-speech package.
 
 import logging
 import os
+import secrets
 import time
 
 try:
@@ -18,7 +19,7 @@ from collections import defaultdict, deque
 from datetime import datetime
 from functools import wraps
 from pathlib import Path
-from typing import Dict, Iterator, List, Optional
+from typing import Dict, Iterator, List, Optional, Tuple
 from urllib.parse import urljoin, urlparse
 
 from argon2 import PasswordHasher
@@ -42,7 +43,7 @@ from i18n import init_i18n, set_locale
 
 # Import the TTSFM package
 try:
-    from ttsfm import AudioFormat, TTSClient, Voice
+    from ttsfm import AudioFormat, TTSClient, Voice, __version__ as PACKAGE_VERSION
     from ttsfm.audio import combine_audio_chunks
     from ttsfm.capabilities import get_capabilities
     from ttsfm.exceptions import (
@@ -57,7 +58,7 @@ except ImportError:
     import sys
 
     sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-    from ttsfm import AudioFormat, TTSClient, Voice
+    from ttsfm import AudioFormat, TTSClient, Voice, __version__ as PACKAGE_VERSION
     from ttsfm.audio import combine_audio_chunks
     from ttsfm.capabilities import get_capabilities
     from ttsfm.exceptions import APIException, NetworkException, ValidationException
@@ -65,6 +66,8 @@ except ImportError:
 
 # Load environment variables
 load_dotenv()
+
+DEBUG = os.getenv("DEBUG", "false").lower() == "true"
 
 # Configure logging
 logging.basicConfig(
@@ -83,10 +86,28 @@ app = Flask(
     root_path=str(APP_ROOT),
     instance_path=str(INSTANCE_PATH),
 )
-app.secret_key = os.getenv("SECRET_KEY", "ttsfm-secret-key-change-in-production")
-CORS(app)
 
-# Configuration (moved up for socketio initialization)
+_DEFAULT_DEV_SECRET = "ttsfm-secret-key-change-in-production"
+_secret_key = os.getenv("SECRET_KEY", _DEFAULT_DEV_SECRET)
+if not DEBUG and _secret_key == _DEFAULT_DEV_SECRET:
+    _secret_key = secrets.token_hex(32)
+    logger.warning(
+        "SECRET_KEY was not set; using an ephemeral secret for this process. "
+        "Set SECRET_KEY for stable sessions across restarts (e.g. secrets.token_hex(32))."
+    )
+app.secret_key = _secret_key
+app.config["PACKAGE_VERSION"] = PACKAGE_VERSION
+
+_cors_raw = os.getenv("TTSFM_CORS_ORIGINS", "").strip()
+if _cors_raw and _cors_raw != "*":
+    _cors_origins = [o.strip() for o in _cors_raw.split(",") if o.strip()]
+    CORS(app, origins=_cors_origins, supports_credentials=True)
+    _socketio_cors_origins = _cors_origins
+    _socketio_credentials = True
+else:
+    CORS(app)
+    _socketio_cors_origins = "*"
+    _socketio_credentials = False
 
 
 def _default_host() -> str:
@@ -105,25 +126,39 @@ def _default_host() -> str:
 
 HOST = os.getenv("HOST", _default_host())
 PORT = int(os.getenv("PORT", "8000"))
-DEBUG = os.getenv("DEBUG", "false").lower() == "true"
 
-# Initialize SocketIO with proper async mode
-# Using eventlet for production, threading for development
-async_mode = "eventlet" if not DEBUG else "threading"
+# Socket.IO async driver: eventlet (legacy default prod), threading (default DEBUG),
+# or gevent (install optional extra ``web-gevent``, set TTSFM_SOCKETIO_ASYNC_MODE=gevent).
+_default_socketio_async = "threading" if DEBUG else "eventlet"
+_async_env = os.getenv("TTSFM_SOCKETIO_ASYNC_MODE", _default_socketio_async).strip().lower()
+if _async_env not in ("eventlet", "threading", "gevent"):
+    logger.warning(
+        "Invalid TTSFM_SOCKETIO_ASYNC_MODE=%r; using %s", _async_env, _default_socketio_async
+    )
+    async_mode = _default_socketio_async
+else:
+    async_mode = _async_env
+
 socketio = SocketIO(
     app,
-    cors_allowed_origins="*",
+    cors_allowed_origins=_socketio_cors_origins,
     async_mode=async_mode,
     logger=DEBUG,  # Enable logging in debug mode for troubleshooting
     engineio_logger=DEBUG,
     ping_timeout=60,  # Time to wait for pong response
     ping_interval=25,  # Interval between ping messages
-    cors_credentials=True,  # Allow credentials in CORS requests
-    manage_session=False  # Don't interfere with Flask sessions
+    cors_credentials=_socketio_credentials,
+    manage_session=False,  # Don't interfere with Flask sessions
 )
 
 # Initialize i18n support
 init_i18n(app)
+
+
+@app.context_processor
+def _inject_package_version():
+    return {"package_version": app.config.get("PACKAGE_VERSION", "unknown")}
+
 
 # API Key configuration
 REQUIRE_API_KEY = os.getenv("REQUIRE_API_KEY", "false").lower() == "true"
@@ -132,15 +167,8 @@ ARGON2_HASH_PREFIXES = ("$argon2i$", "$argon2d$", "$argon2id$")
 PASSWORD_HASHER = PasswordHasher()
 
 
-def _hash_key(value: str) -> str:
-    """Hash an API key value with Argon2."""
-    if not value:
-        raise ValueError("API key value must not be empty.")
-    return PASSWORD_HASHER.hash(value)
-
-
-def _load_api_key_hashes() -> List[str]:
-    """Load configured API keys and normalize them to Argon2 hashes."""
+def _load_api_key_material() -> Tuple[List[str], List[str]]:
+    """Load plaintext API keys and Argon2 hashes from the environment."""
     plain_keys: List[str] = []
     prehashed_entries: List[str] = []
 
@@ -163,18 +191,16 @@ def _load_api_key_hashes() -> List[str]:
         elif entry:
             logger.warning("Ignoring unsupported API key hash format; expected Argon2 hashes.")
 
-    for key in plain_keys:
-        if key:
-            hashes.append(_hash_key(key))
-
-    return hashes
+    stored_plain = [key for key in plain_keys if key]
+    return stored_plain, hashes
 
 
-API_KEY_HASHES = _load_api_key_hashes()
-API_KEYS_CONFIGURED = bool(API_KEY_HASHES)
+PLAIN_API_KEYS, API_KEY_HASHES = _load_api_key_material()
+API_KEYS_CONFIGURED = bool(PLAIN_API_KEYS or API_KEY_HASHES)
 
 RATE_LIMIT_WINDOW = int(os.getenv("TTSFM_AUTH_WINDOW_SECONDS", "60"))
 RATE_LIMIT_ATTEMPTS = int(os.getenv("TTSFM_AUTH_MAX_ATTEMPTS", "5"))
+_MAX_FAILED_AUTH_IPS = int(os.getenv("TTSFM_AUTH_MAX_TRACKED_IPS", "5000"))
 _FAILED_AUTH_ATTEMPTS: Dict[str, deque] = defaultdict(deque)
 
 
@@ -183,13 +209,6 @@ def create_tts_client() -> TTSClient:
     default_prompt = os.getenv("TTSFM_DEFAULT_PROMPT", "false").lower() == "true"
     return TTSClient(use_default_prompt=default_prompt)
 
-
-# Initialize WebSocket handler
-
-websocket_handler = WebSocketTTSHandler(socketio, create_tts_client)
-
-logger.info("Initialized web app with TTSFM using openai.fm free service")
-logger.info(f"WebSocket support enabled with {async_mode} async mode")
 
 # API Key validation decorator
 
@@ -254,6 +273,10 @@ def _is_valid_api_key(provided: Optional[str]) -> bool:
     if not provided:
         return False
 
+    for key in PLAIN_API_KEYS:
+        if len(provided) == len(key) and secrets.compare_digest(provided, key):
+            return True
+
     for stored_hash in API_KEY_HASHES:
         if not stored_hash.startswith(ARGON2_HASH_PREFIXES):
             logger.warning("Unsupported API key hash format encountered; ignoring entry.")
@@ -272,11 +295,18 @@ def _is_valid_api_key(provided: Optional[str]) -> bool:
     return False
 
 
+def _prune_failed_auth_map() -> None:
+    while len(_FAILED_AUTH_ATTEMPTS) > _MAX_FAILED_AUTH_IPS:
+        first_ip = next(iter(_FAILED_AUTH_ATTEMPTS))
+        del _FAILED_AUTH_ATTEMPTS[first_ip]
+
+
 def _register_failed_attempt(ip: str) -> None:
     attempts = _FAILED_AUTH_ATTEMPTS[ip]
     now = time.monotonic()
     attempts.append(now)
     _trim_attempts(attempts, now)
+    _prune_failed_auth_map()
 
 
 def _reset_failed_attempts(ip: str) -> None:
@@ -289,9 +319,14 @@ def _trim_attempts(attempts: deque, now: float) -> None:
 
 
 def _is_rate_limited(ip: str) -> bool:
-    attempts = _FAILED_AUTH_ATTEMPTS[ip]
+    attempts = _FAILED_AUTH_ATTEMPTS.get(ip)
+    if attempts is None:
+        return False
     now = time.monotonic()
     _trim_attempts(attempts, now)
+    if not attempts:
+        _FAILED_AUTH_ATTEMPTS.pop(ip, None)
+        return False
     return len(attempts) >= RATE_LIMIT_ATTEMPTS
 
 
@@ -310,8 +345,8 @@ def _is_safe_url(target: Optional[str]) -> bool:
     if not target:
         return False
 
-    # Replace backslashes to prevent bypass (browsers accept \ as /)
-    target = target.replace("\\", "")
+    if "\\" in target:
+        return False
 
     parsed = urlparse(target)
     # Reject if scheme or netloc is present, or if it starts with //
@@ -324,6 +359,23 @@ def _is_safe_url(target: Optional[str]) -> bool:
     host = urlparse(request.host_url)
     j = urlparse(joined)
     return j.scheme in ("http", "https") and j.netloc == host.netloc
+
+
+websocket_handler = WebSocketTTSHandler(
+    socketio,
+    create_tts_client,
+    auth_context={
+        "require_api_key": REQUIRE_API_KEY,
+        "api_keys_configured": API_KEYS_CONFIGURED,
+        "is_valid_api_key": _is_valid_api_key,
+        "is_rate_limited": _is_rate_limited,
+        "register_failed": _register_failed_attempt,
+        "reset_failed_attempts": _reset_failed_attempts,
+    },
+)
+
+logger.info("Initialized web app with TTSFM using openai.fm free service")
+logger.info("WebSocket support enabled with %s async mode", async_mode)
 
 
 @app.route("/set-language/<lang_code>")
@@ -500,16 +552,27 @@ def validate_text():
 def get_status():
     """Get service status."""
     try:
-        # Try to make a simple request to check if the TTS service is available
-        client = create_tts_client()
-
-        client.generate_speech(text="test", voice=Voice.ALLOY, response_format=AudioFormat.MP3)
+        with create_tts_client() as client:
+            probe_url = client.base_url.rstrip("/") + "/"
+            probe = None
+            try:
+                probe = client.session.head(probe_url, timeout=(2.0, 4.0), allow_redirects=True)
+            except Exception:
+                probe = None
+            if probe is None or probe.status_code == 405:
+                if probe is not None:
+                    probe.close()
+                probe = client.session.get(probe_url, timeout=(2.0, 4.0), stream=True)
+            status = probe.status_code
+            probe.close()
+            if status >= 500:
+                raise RuntimeError(f"upstream returned HTTP {status}")
 
         return jsonify(
             {
                 "status": "online",
                 "tts_service": "openai.fm (free)",
-                "package_version": "3.4.2",
+                "package_version": app.config.get("PACKAGE_VERSION", "unknown"),
                 "timestamp": datetime.now().isoformat(),
             }
         )
@@ -536,7 +599,7 @@ def health_check():
     return jsonify(
         {
             "status": "healthy",
-            "package_version": "3.4.2",
+            "package_version": app.config.get("PACKAGE_VERSION", "unknown"),
             "image_variant": caps.get_capabilities()["image_variant"],
             "ffmpeg_available": caps.ffmpeg_available,
             "timestamp": datetime.now().isoformat(),
@@ -628,6 +691,34 @@ def openai_speech():
         auto_combine = data.get("auto_combine", True)
         # Custom parameter for chunk size
         max_length = data.get("max_length", 1000)
+        try:
+            max_length = int(max_length)
+        except (TypeError, ValueError):
+            return (
+                jsonify(
+                    {
+                        "error": {
+                            "message": "max_length must be an integer",
+                            "type": "invalid_request_error",
+                            "code": "invalid_max_length",
+                        }
+                    }
+                ),
+                400,
+            )
+        if max_length < 1 or max_length > 1000:
+            return (
+                jsonify(
+                    {
+                        "error": {
+                            "message": "max_length must be between 1 and 1000",
+                            "type": "invalid_request_error",
+                            "code": "invalid_max_length",
+                        }
+                    }
+                ),
+                400,
+            )
 
         # Validate required fields
         if not input_text:
@@ -785,96 +876,92 @@ def openai_speech():
         )
 
         client = create_tts_client()
-
-        # Check if text exceeds limit and auto_combine is enabled
-        if len(input_text) > max_length and auto_combine:
-            # Long text with auto-combine enabled: split and combine
-            logger.info(
-                "Long text detected (%s chars); auto-combining with format %s",
-                len(input_text),
-                format_enum.value,
-            )
-
-            # Generate speech chunks
-            responses = client.generate_speech_long_text(
-                text=input_text,
-                voice=voice_enum,
-                response_format=format_enum,
-                instructions=instructions,
-                max_length=max_length,
-                preserve_words=True,
-                speed=speed,
-            )
-
-            if not responses:
-                return (
-                    jsonify(
-                        {
-                            "error": {
-                                "message": "No valid text chunks found",
-                                "type": "processing_error",
-                                "code": "no_chunks",
-                            }
-                        }
-                    ),
-                    400,
+        try:
+            if len(input_text) > max_length and auto_combine:
+                logger.info(
+                    "Long text detected (%s chars); auto-combining with format %s",
+                    len(input_text),
+                    format_enum.value,
                 )
 
-            # Extract audio data and combine
-            audio_chunks = [resp.audio_data for resp in responses]
-            actual_format = responses[0].format
-            combined_audio = combine_audio_chunks(audio_chunks, actual_format.value)
-
-            if not combined_audio:
-                return (
-                    jsonify(
-                        {
-                            "error": {
-                                "message": "Failed to combine audio chunks",
-                                "type": "processing_error",
-                                "code": "combine_failed",
-                            }
-                        }
-                    ),
-                    500,
+                responses = client.generate_speech_long_text(
+                    text=input_text,
+                    voice=voice_enum,
+                    response_format=format_enum,
+                    instructions=instructions,
+                    max_length=max_length,
+                    preserve_words=True,
+                    speed=speed,
                 )
 
-            content_type = responses[0].content_type
+                if not responses:
+                    return (
+                        jsonify(
+                            {
+                                "error": {
+                                    "message": "No valid text chunks found",
+                                    "type": "processing_error",
+                                    "code": "no_chunks",
+                                }
+                            }
+                        ),
+                        400,
+                    )
 
-            logger.info(
-                "Successfully combined %s chunks into single audio file",
-                len(responses),
-            )
+                audio_chunks = [resp.audio_data for resp in responses]
+                actual_format = responses[0].format
+                combined_audio = combine_audio_chunks(audio_chunks, actual_format.value)
 
-            headers = {
-                "Content-Type": content_type,
-                "X-Audio-Format": actual_format.value,
-                "X-Audio-Size": str(len(combined_audio)),
-                "X-Chunks-Combined": str(len(responses)),
-                "X-Original-Text-Length": str(len(input_text)),
-                "X-Auto-Combine": "true",
-                "X-Powered-By": "TTSFM-OpenAI-Compatible",
-                "X-Requested-Format": format_enum.value,
-            }
+                if not combined_audio:
+                    return (
+                        jsonify(
+                            {
+                                "error": {
+                                    "message": "Failed to combine audio chunks",
+                                    "type": "processing_error",
+                                    "code": "combine_failed",
+                                }
+                            }
+                        ),
+                        500,
+                    )
 
-            # Add speed metadata if available (from first response)
-            if responses and responses[0].metadata and "requested_speed" in responses[0].metadata:
-                headers["X-Requested-Speed"] = str(responses[0].metadata["requested_speed"])
-                headers["X-Speed-Applied"] = str(
-                    responses[0].metadata.get("speed_applied", False)
-                ).lower()
+                content_type = responses[0].content_type
 
-            return Response(
-                stream_with_context(_chunk_bytes(combined_audio)),
-                mimetype=content_type,
-                headers=headers,
-                direct_passthrough=True,
-            )
+                logger.info(
+                    "Successfully combined %s chunks into single audio file",
+                    len(responses),
+                )
 
-        else:
-            # Short text or auto_combine disabled: use regular generation
+                headers = {
+                    "Content-Type": content_type,
+                    "X-Audio-Format": actual_format.value,
+                    "X-Audio-Size": str(len(combined_audio)),
+                    "X-Chunks-Combined": str(len(responses)),
+                    "X-Original-Text-Length": str(len(input_text)),
+                    "X-Auto-Combine": "true",
+                    "X-Powered-By": "TTSFM-OpenAI-Compatible",
+                    "X-Requested-Format": format_enum.value,
+                }
+
+                if (
+                    responses
+                    and responses[0].metadata
+                    and "requested_speed" in responses[0].metadata
+                ):
+                    headers["X-Requested-Speed"] = str(responses[0].metadata["requested_speed"])
+                    headers["X-Speed-Applied"] = str(
+                        responses[0].metadata.get("speed_applied", False)
+                    ).lower()
+
+                return Response(
+                    stream_with_context(_chunk_bytes(combined_audio)),
+                    mimetype=content_type,
+                    headers=headers,
+                    direct_passthrough=True,
+                )
+
             if len(input_text) > max_length and not auto_combine:
-                # Text is too long but auto_combine is disabled - return error
                 return (
                     jsonify(
                         {
@@ -893,7 +980,6 @@ def openai_speech():
                     400,
                 )
 
-            # Generate speech using the TTSFM package
             response = client.generate_speech(
                 text=input_text,
                 voice=voice_enum,
@@ -914,7 +1000,6 @@ def openai_speech():
                 "X-Requested-Format": format_enum.value,
             }
 
-            # Add speed metadata if available
             if response.metadata and "requested_speed" in response.metadata:
                 headers["X-Requested-Speed"] = str(response.metadata["requested_speed"])
                 headers["X-Speed-Applied"] = str(
@@ -927,6 +1012,8 @@ def openai_speech():
                 headers=headers,
                 direct_passthrough=True,
             )
+        finally:
+            client.close()
 
     except ValidationException as e:
         logger.warning(f"OpenAI API validation error: {e}")

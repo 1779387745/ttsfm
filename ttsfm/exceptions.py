@@ -205,7 +205,13 @@ def create_exception_from_response(
     Returns:
         APIException: Appropriate exception instance
     """
-    message = response_data.get("error", {}).get("message", default_message)
+    err = response_data.get("error")
+    if isinstance(err, str) and err.strip():
+        message = err
+    elif isinstance(err, dict):
+        message = err.get("message", default_message)
+    else:
+        message = default_message
 
     if status_code == 401:
         return AuthenticationException(message, response_data=response_data)

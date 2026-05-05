@@ -98,6 +98,35 @@ def test_sync_long_text_returns_list_without_auto_combine(monkeypatch):
     assert result is responses
 
 
+def test_sync_generate_speech_batch_uses_parallel_sessions(monkeypatch):
+    parallel_hits = {"n": 0}
+    spawn_hits = {"n": 0}
+    orig_spawn = TTSClient._spawn_worker_session
+
+    def counting_spawn(self):
+        spawn_hits["n"] += 1
+        return orig_spawn(self)
+
+    def fake_make(self, request, http_session=None):
+        if http_session is not None:
+            parallel_hits["n"] += 1
+        return _mk_response(request.input.encode())
+
+    monkeypatch.setattr(TTSClient, "_make_request", fake_make)
+    monkeypatch.setattr(TTSClient, "_spawn_worker_session", counting_spawn)
+    client = TTSClient()
+    text = "x" * 2000
+    parts = client.generate_speech_batch(
+        text=text,
+        max_length=400,
+        preserve_words=False,
+        max_concurrent_chunks=2,
+    )
+    assert len(parts) == 5
+    assert parallel_hits["n"] == 5
+    assert 1 <= spawn_hits["n"] <= 2
+
+
 @pytest.mark.asyncio
 async def test_async_long_text_auto_combine(monkeypatch):
     client = AsyncTTSClient()

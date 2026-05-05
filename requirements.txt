@@ -1,4 +1,5 @@
-# Core dependencies for the TTSFM package
+# Pin ranges mirror pyproject.toml [project] dependencies.
+# Preferred install: pip install -e ".[web,dev]"
 requests>=2.25.0
 aiohttp>=3.8.0
 python-dotenv>=1.0.1

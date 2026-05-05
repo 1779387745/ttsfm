@@ -56,6 +56,8 @@ Thumbs.db
 *.aac
 *.flac
 *.pcm
+!tests/fixtures/
+!tests/fixtures/**
 test_output.*
 output.*
 hello.*

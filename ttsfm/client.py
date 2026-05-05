@@ -7,10 +7,12 @@ text-to-speech generation with OpenAI-compatible API.
 
 import json
 import logging
+import os
 import threading
 import time
 import uuid
-from typing import Dict, List, Optional, Union
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import Dict, List, Optional, Tuple, Union
 
 import requests
 from requests.adapters import HTTPAdapter
@@ -36,6 +38,8 @@ from .utils import (
     exponential_backoff,
     format_file_size,
     get_realistic_headers,
+    resolve_api_key,
+    safe_response_headers_for_metadata,
     sanitize_text,
     split_text_by_length,
     validate_url,
@@ -84,7 +88,7 @@ class TTSClient:
             **kwargs: Additional configuration options
         """
         self.base_url = base_url.rstrip("/")
-        self.api_key = api_key
+        self.api_key = resolve_api_key(api_key)
         self.timeout = timeout
         self.max_retries = max_retries
         self.verify_ssl = verify_ssl
@@ -120,6 +124,24 @@ class TTSClient:
             self.session.headers["Authorization"] = f"Bearer {self.api_key}"
 
         logger.info(f"Initialized TTS client with base URL: {self.base_url}")
+
+    def _spawn_worker_session(self) -> requests.Session:
+        """Create an isolated Session for concurrent chunk requests (thread-safe)."""
+        sess = requests.Session()
+        retry_strategy = Retry(
+            total=self.max_retries,
+            status_forcelist=[429, 500, 502, 503, 504],
+            allowed_methods=["HEAD", "GET", "POST"],
+            backoff_factor=1,
+        )
+        adapter = HTTPAdapter(max_retries=retry_strategy, pool_connections=4, pool_maxsize=4)
+        sess.mount("http://", adapter)
+        sess.mount("https://", adapter)
+        base_headers = get_realistic_headers(self.default_headers)
+        sess.headers.update(base_headers)
+        if self.api_key:
+            sess.headers["Authorization"] = f"Bearer {self.api_key}"
+        return sess
 
     def _get_headers_for_format(self, requested_format: AudioFormat) -> Dict[str, str]:
         """
@@ -234,6 +256,7 @@ class TTSClient:
         instructions: Optional[str] = None,
         max_length: int = 1000,
         preserve_words: bool = True,
+        max_concurrent_chunks: Optional[int] = None,
         **kwargs,  # type: ignore[no-untyped-def]
     ) -> List[TTSResponse]:
         """
@@ -249,6 +272,8 @@ class TTSClient:
             instructions: Optional instructions for voice modulation
             max_length: Maximum length per chunk (default: 1000)
             preserve_words: Whether to avoid splitting words (default: True)
+            max_concurrent_chunks: Max parallel HTTP workers for chunk requests (default: env
+                ``TTSFM_SYNC_LONG_TEXT_WORKERS`` or 4). Use ``1`` to force sequential requests.
             **kwargs: Additional parameters
 
         Returns:
@@ -268,26 +293,65 @@ class TTSClient:
         if not chunks:
             raise ValueError("No valid text chunks found after processing")
 
-        responses = []
+        if max_concurrent_chunks is None:
+            try:
+                workers = int(os.environ.get("TTSFM_SYNC_LONG_TEXT_WORKERS", "4"))
+            except ValueError:
+                workers = 4
+        else:
+            workers = int(max_concurrent_chunks)
+        workers = max(1, min(workers, len(chunks)))
 
-        for i, chunk in enumerate(chunks):
-            logger.info(f"Processing chunk {i+1}/{len(chunks)} ({len(chunk)} characters)")
+        worker_tls = threading.local()
+        worker_sessions: List[requests.Session] = []
+        sessions_lock = threading.Lock()
 
-            # Create request for this chunk (disable length validation since we already split)
+        def _get_worker_session() -> requests.Session:
+            sess = getattr(worker_tls, "session", None)
+            if sess is None:
+                sess = self._spawn_worker_session()
+                worker_tls.session = sess
+                with sessions_lock:
+                    worker_sessions.append(sess)
+            return sess
+
+        def _one_chunk(index: int, chunk: str) -> Tuple[int, TTSResponse]:
             request = TTSRequest(
                 input=chunk,
                 voice=voice,
                 response_format=response_format,
                 instructions=instructions,
                 max_length=max_length,
-                validate_length=False,  # We already split the text
+                validate_length=False,
                 **kwargs,
             )
+            if workers == 1:
+                return index, self._make_request(request)
+            return index, self._make_request(request, http_session=_get_worker_session())
 
-            response = self._make_request(request)
-            responses.append(response)
+        if workers == 1:
+            responses: List[TTSResponse] = []
+            for i, chunk in enumerate(chunks):
+                logger.info(
+                    "Processing chunk %s/%s (%s characters)", i + 1, len(chunks), len(chunk)
+                )
+                _, response = _one_chunk(i, chunk)
+                responses.append(response)
+            return responses
 
-        return responses
+        logger.info("Processing %s chunks with up to %s concurrent workers", len(chunks), workers)
+        ordered: List[Optional[TTSResponse]] = [None] * len(chunks)
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            futures = {executor.submit(_one_chunk, i, c): i for i, c in enumerate(chunks)}
+            for fut in as_completed(futures):
+                index, response = fut.result()
+                ordered[index] = response
+        for sess in worker_sessions:
+            try:
+                sess.close()
+            except OSError:
+                pass
+        return [r for r in ordered if r is not None]
 
     def generate_speech_long_text(
         self,
@@ -298,6 +362,7 @@ class TTSClient:
         max_length: int = 1000,
         preserve_words: bool = True,
         auto_combine: bool = False,
+        max_concurrent_chunks: Optional[int] = None,
         **kwargs,  # type: ignore[no-untyped-def]
     ) -> Union[TTSResponse, List[TTSResponse]]:
         """
@@ -330,6 +395,7 @@ class TTSClient:
             instructions=instructions,
             max_length=max_length,
             preserve_words=preserve_words,
+            max_concurrent_chunks=max_concurrent_chunks,
             **kwargs,
         )
 
@@ -370,12 +436,17 @@ class TTSClient:
 
         return response_format
 
-    def _make_request(self, request: TTSRequest) -> TTSResponse:
+    def _make_request(
+        self,
+        request: TTSRequest,
+        http_session: Optional[requests.Session] = None,
+    ) -> TTSResponse:
         """
         Make the actual HTTP request to the openai.fm TTS service.
 
         Args:
             request: TTS request object
+            http_session: Optional dedicated session (for parallel chunk requests).
 
         Returns:
             TTSResponse: Generated audio response
@@ -456,14 +527,23 @@ class TTSClient:
 
                 # Use multipart form data as required by openai.fm
                 payload = dict(form_data)
-                with self._session_lock:
-                    response = self.session.post(
+                if http_session is not None:
+                    response = http_session.post(
                         url,
                         data=payload,
                         headers=format_headers,
                         timeout=self.timeout,
                         verify=self.verify_ssl,
                     )
+                else:
+                    with self._session_lock:
+                        response = self.session.post(
+                            url,
+                            data=payload,
+                            headers=format_headers,
+                            timeout=self.timeout,
+                            verify=self.verify_ssl,
+                        )
 
                 # Handle different response types
                 if response.status_code == 200:
@@ -651,7 +731,7 @@ class TTSClient:
 
         # Create response object
         metadata = {
-            "response_headers": dict(response.headers),
+            "response_headers": safe_response_headers_for_metadata(response.headers),
             "status_code": response.status_code,
             "url": str(response.url),
             "service": "openai.fm",

@@ -5,6 +5,11 @@ import pytest
 import ttsfm.utils as utils
 
 
+def test_split_text_rejects_max_length_over_upstream_limit():
+    with pytest.raises(ValueError, match="1000"):
+        utils.split_text_by_length("hello", max_length=1001)
+
+
 def test_split_text_preserves_sentence_punctuation():
     text = "First sentence! Second question? Final statement."
     chunks = utils.split_text_by_length(text, max_length=15)

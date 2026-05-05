@@ -66,7 +66,10 @@ class TTSRequest:
     def __post_init__(self) -> None:
         """Validate and normalize fields after initialization."""
         if self.max_length > 1000:
-            self.max_length = 1000
+            raise ValueError(
+                "max_length cannot exceed 1000 (upstream limit). "
+                "Use a smaller value or split long input with generate_speech_long_text."
+            )
         # Ensure voice is a valid Voice enum
         if isinstance(self.voice, str):
             try:

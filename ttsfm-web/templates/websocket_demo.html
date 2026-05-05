@@ -1,49 +1,61 @@
 {% extends "base.html" %}
 
-{% block title %}{{ _('websocket.title', 'WebSocket Streaming Demo') }} - TTSFM{% endblock %}
+{% block title %}TTSFM - {{ _('websocket_demo.title') }}{% endblock %}
 
 {% block content %}
+<script type="application/json" id="ws-demo-i18n">{{ {
+    "status_connecting": _("websocket_demo.status_connecting"),
+    "status_connected": _("websocket_demo.status_connected"),
+    "status_disconnected": _("websocket_demo.status_disconnected"),
+    "status_error": _("websocket_demo.status_error"),
+    "error_not_connected": _("websocket_demo.error_not_connected"),
+    "error_empty_text": _("websocket_demo.error_empty_text"),
+    "error_streaming_prefix": _("websocket_demo.error_streaming_prefix"),
+    "error_failed_prefix": _("websocket_demo.error_failed_prefix"),
+    "info_stream_cancelled": _("websocket_demo.info_stream_cancelled"),
+    "chunk_title": _("playground.chunk_title")
+}|tojson }}</script>
 <div class="container mt-5">
     <div class="row">
         <div class="col-lg-10 mx-auto">
             <h1 class="text-center mb-4">
                 <i class="fas fa-bolt text-warning"></i>
-                {{ _('websocket.title', 'WebSocket Streaming Demo') }}
+                {{ _('websocket_demo.title') }}
             </h1>
             
             <!-- Connection Status -->
             <div class="alert alert-info" id="connection-status">
                 <i class="fas fa-plug me-2"></i>
-                <span id="status-text">Connecting to WebSocket server...</span>
+                <span id="status-text">{{ _('websocket_demo.status_connecting') }}</span>
             </div>
             
             <!-- Input Form -->
             <div class="card shadow-sm mb-4">
                 <div class="card-body">
-                    <h5 class="card-title">{{ _('playground.generate_speech', 'Generate Speech') }}</h5>
+                    <h5 class="card-title">{{ _('playground.generate_speech') }}</h5>
                     
                     <form id="streaming-form">
                         <div class="mb-3">
                             <label for="text-input" class="form-label">
-                                {{ _('playground.text_input', 'Text to Convert') }}
+                                {{ _('playground.text_input_label') }}
                             </label>
                             <textarea 
                                 class="form-control" 
                                 id="text-input" 
                                 rows="4" 
                                 maxlength="1000"
-                                placeholder="{{ _('playground.text_placeholder', 'Enter your text here...') }}"
+                                placeholder="{{ _('playground.text_input_placeholder') }}"
                             >Experience the future of text-to-speech with real-time WebSocket streaming! This innovative feature delivers audio chunks as they're generated, providing a more responsive and engaging user experience.</textarea>
                             <div class="form-text">
                                 <i class="fas fa-info-circle me-1"></i>
-                                Streaming will split text into chunks for real-time delivery
+                                {{ _('websocket_demo.stream_split_hint') }}
                             </div>
                         </div>
                         
                         <div class="row">
                             <div class="col-md-12 mb-3">
                                 <label for="voice-select" class="form-label">
-                                    {{ _('playground.voice', 'Voice') }}
+                                    {{ _('playground.voice_label') }}
                                 </label>
                                 <select class="form-select" id="voice-select">
                                     <option value="alloy">Alloy</option>
@@ -59,11 +71,11 @@
                         <div class="d-grid gap-2 d-md-flex justify-content-md-end">
                             <button type="submit" class="btn btn-primary" id="stream-btn">
                                 <i class="fas fa-bolt me-2"></i>
-                                Start Streaming
+                                {{ _('websocket_demo.start_streaming') }}
                             </button>
                             <button type="button" class="btn btn-danger" id="cancel-btn" style="display: none;">
                                 <i class="fas fa-stop me-2"></i>
-                                Cancel
+                                {{ _('websocket_demo.cancel') }}
                             </button>
                         </div>
                     </form>
@@ -73,7 +85,7 @@
             <!-- Progress Section -->
             <div class="card shadow-sm mb-4" id="progress-section" style="display: none;">
                 <div class="card-body">
-                    <h5 class="card-title">Streaming Progress</h5>
+                    <h5 class="card-title">{{ _('playground.streaming_progress') }}</h5>
                     
                     <div class="progress mb-3" style="height: 25px;">
                         <div 
@@ -88,15 +100,15 @@
                     
                     <div class="row text-center">
                         <div class="col-md-4">
-                            <h6>Chunks Received</h6>
+                            <h6>{{ _('playground.chunks_heading') }}</h6>
                             <p class="h4"><span id="chunks-received">0</span> / <span id="total-chunks">0</span></p>
                         </div>
                         <div class="col-md-4">
-                            <h6>Data Transferred</h6>
+                            <h6>{{ _('playground.data_heading') }}</h6>
                             <p class="h4" id="data-transferred">0 KB</p>
                         </div>
                         <div class="col-md-4">
-                            <h6>Generation Time</h6>
+                            <h6>{{ _('playground.time_heading') }}</h6>
                             <p class="h4" id="generation-time">0.0s</p>
                         </div>
                     </div>
@@ -106,7 +118,7 @@
             <!-- Audio Chunks Display -->
             <div class="card shadow-sm mb-4" id="chunks-section" style="display: none;">
                 <div class="card-body">
-                    <h5 class="card-title">Audio Chunks</h5>
+                    <h5 class="card-title">{{ _('websocket_demo.audio_chunks_card_title') }}</h5>
                     <div id="chunks-container" class="row g-2">
                         <!-- Chunks will be added here dynamically -->
                     </div>
@@ -116,12 +128,12 @@
             <!-- Final Audio Player -->
             <div class="card shadow-sm" id="audio-section" style="display: none;">
                 <div class="card-body">
-                    <h5 class="card-title">Generated Audio</h5>
+                    <h5 class="card-title">{{ _('playground.audio_player_title') }}</h5>
                     <audio id="audio-player" controls class="w-100"></audio>
                     <div class="mt-2">
                         <button class="btn btn-success" id="download-btn">
                             <i class="fas fa-download me-2"></i>
-                            Download Audio
+                            {{ _('playground.download_audio') }}
                         </button>
                     </div>
                 </div>
@@ -132,18 +144,16 @@
                 <div class="card-body">
                     <h5 class="card-title">
                         <i class="fas fa-info-circle text-info me-2"></i>
-                        About WebSocket Streaming
+                        {{ _('websocket_demo.about_title') }}
                     </h5>
                     <p>
-                        This demo showcases real-time audio streaming using WebSockets. Instead of waiting 
-                        for the entire audio to be generated, you receive chunks as they're processed, 
-                        providing immediate feedback and a more responsive experience.
+                        {{ _('websocket_demo.about_intro') }}
                     </p>
                     <ul>
-                        <li><strong>Lower Perceived Latency:</strong> Start receiving audio before generation completes</li>
-                        <li><strong>Progress Tracking:</strong> Real-time updates on generation progress</li>
-                        <li><strong>Cancellable:</strong> Stop generation mid-stream if needed</li>
-                        <li><strong>Efficient:</strong> Stream chunks as they're ready, no waiting</li>
+                        <li>{{ _('websocket_demo.about_latency') }}</li>
+                        <li>{{ _('websocket_demo.about_progress') }}</li>
+                        <li>{{ _('websocket_demo.about_cancel') }}</li>
+                        <li>{{ _('websocket_demo.about_efficient') }}</li>
                     </ul>
                 </div>
             </div>
@@ -157,6 +167,18 @@
 <script src="{{ url_for('static', filename='js/websocket-tts.js') }}"></script>
 
 <script>
+const WS_DEMO_I18N = (() => {
+    const el = document.getElementById('ws-demo-i18n');
+    if (!el || !el.textContent) {
+        return {};
+    }
+    try {
+        return JSON.parse(el.textContent);
+    } catch (e) {
+        return {};
+    }
+})();
+
 // Initialize WebSocket client
 let wsClient = null;
 let currentRequestId = null;
@@ -188,7 +210,7 @@ document.addEventListener('DOMContentLoaded', function() {
         onError: (error) => {
             console.error('WebSocket error:', error);
             updateConnectionStatus('error');
-            showError(`Connection error: ${error.message}. Check browser console for details.`);
+            showError(`${WS_DEMO_I18N.status_error || 'Error'}: ${error.message}`);
         }
     });
 
@@ -208,25 +230,25 @@ function updateConnectionStatus(status) {
     switch(status) {
         case 'connected':
             statusEl.classList.add('alert-success');
-            statusText.innerHTML = '<i class="fas fa-check-circle me-2"></i>Connected to WebSocket server - Ready to stream!';
+            statusText.innerHTML = '<i class="fas fa-check-circle me-2"></i>' + (WS_DEMO_I18N.status_connected || '');
             // Enable the form
             document.getElementById('stream-btn').disabled = false;
             break;
         case 'disconnected':
             statusEl.classList.add('alert-warning');
-            statusText.innerHTML = '<i class="fas fa-exclamation-triangle me-2"></i>Disconnected from server - Attempting to reconnect...';
+            statusText.innerHTML = '<i class="fas fa-exclamation-triangle me-2"></i>' + (WS_DEMO_I18N.status_disconnected || '');
             // Disable the form
             document.getElementById('stream-btn').disabled = true;
             break;
         case 'error':
             statusEl.classList.add('alert-danger');
-            statusText.innerHTML = '<i class="fas fa-times-circle me-2"></i>Connection error - Please check console and refresh the page';
+            statusText.innerHTML = '<i class="fas fa-times-circle me-2"></i>' + (WS_DEMO_I18N.status_error || '');
             // Disable the form
             document.getElementById('stream-btn').disabled = true;
             break;
         default:
             statusEl.classList.add('alert-info');
-            statusText.innerHTML = '<i class="fas fa-plug me-2"></i>Connecting to WebSocket server...';
+            statusText.innerHTML = '<i class="fas fa-plug me-2"></i>' + (WS_DEMO_I18N.status_connecting || '');
             // Disable the form until connected
             document.getElementById('stream-btn').disabled = true;
     }
@@ -236,7 +258,7 @@ async function handleStreamingSubmit(e) {
     e.preventDefault();
     
     if (!wsClient || !wsClient.isConnected()) {
-        showError('WebSocket not connected. Please refresh the page.');
+        showError(WS_DEMO_I18N.error_not_connected || '');
         return;
     }
     
@@ -246,7 +268,7 @@ async function handleStreamingSubmit(e) {
     const format = 'mp3';
     
     if (!text) {
-        showError('Please enter some text to convert.');
+        showError(WS_DEMO_I18N.error_empty_text || '');
         return;
     }
     
@@ -280,14 +302,14 @@ async function handleStreamingSubmit(e) {
                 handleStreamComplete(result);
             },
             onError: (error) => {
-                showError(`Streaming error: ${error.message}`);
+                showError(`${WS_DEMO_I18N.error_streaming_prefix || ''} ${error.message}`);
             }
         });
         
         console.log('Streaming completed:', result);
         
     } catch (error) {
-        showError(`Failed to generate speech: ${error.message}`);
+        showError(`${WS_DEMO_I18N.error_failed_prefix || ''} ${error.message}`);
         resetUI();
     }
 }
@@ -316,8 +338,9 @@ function handleAudioChunk(chunk) {
     // Create chunk visualization
     const chunkEl = document.createElement('div');
     chunkEl.className = 'col-auto';
+    const chunkWord = WS_DEMO_I18N.chunk_title || 'Chunk';
     chunkEl.innerHTML = `
-        <div class="badge bg-primary p-2" title="Chunk ${chunk.chunkIndex + 1}">
+        <div class="badge bg-primary p-2" title="${chunkWord} ${chunk.chunkIndex + 1}">
             <i class="fas fa-music me-1"></i>
             ${chunk.chunkIndex + 1}
             <small class="d-block">${(chunk.audioData.byteLength / 1024).toFixed(1)}KB</small>
@@ -368,7 +391,7 @@ function handleStreamComplete(result) {
 function handleCancel() {
     if (currentRequestId) {
         wsClient.cancelStream(currentRequestId);
-        showInfo('Stream cancelled');
+        showInfo(WS_DEMO_I18N.info_stream_cancelled || '');
         resetUI();
     }
 }

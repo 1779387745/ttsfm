@@ -36,6 +36,8 @@ Example:
 
 from typing import Optional
 
+from importlib.metadata import PackageNotFoundError, version as _package_version
+
 from .async_client import AsyncTTSClient
 from .audio import combine_audio_chunks, combine_responses
 from .client import TTSClient
@@ -62,7 +64,10 @@ from .models import (
 )
 from .utils import split_text_by_length, validate_text_length
 
-__version__ = "3.4.2"
+try:
+    __version__ = _package_version("ttsfm")
+except PackageNotFoundError:  # pragma: no cover - running from source tree without install
+    __version__ = "0.0.0"
 __author__ = "dbcccc"
 __email__ = "120614547+dbccccccc@users.noreply.github.com"
 __description__ = "Text-to-Speech API Client with OpenAI compatibility"

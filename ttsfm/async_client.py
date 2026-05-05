@@ -34,6 +34,8 @@ from .utils import (
     exponential_backoff,
     format_file_size,
     get_realistic_headers,
+    resolve_api_key,
+    safe_response_headers_for_metadata,
     sanitize_text,
     split_text_by_length,
     validate_url,
@@ -83,7 +85,7 @@ class AsyncTTSClient:
             **kwargs: Additional configuration options
         """
         self.base_url = base_url.rstrip("/")
-        self.api_key = api_key
+        self.api_key = resolve_api_key(api_key)
         self.timeout = timeout
         self.max_retries = max_retries
         self.verify_ssl = verify_ssl
@@ -466,40 +468,34 @@ class AsyncTTSClient:
                     logger.debug(
                         f"Requesting {base_format.value} from openai.fm (target format: {requested_format.value})"
                     )
-                    if self._session is None:
-                        await self._ensure_session()
-                    if self._session is not None:
-                        async with self._session.post(url, data=payload) as response:
-                            # Handle different response types
-                            if response.status == 200:
-                                return await self._process_openai_fm_response(response, request)
-                            else:
-                                # Try to parse error response
-                                try:
-                                    error_data = await response.json()
-                                except (json.JSONDecodeError, ValueError):
-                                    text = await response.text()
-                                    error_data = {"error": {"message": text or "Unknown error"}}
+                    await self._ensure_session()
+                    session = self._session
+                    if session is None:
+                        raise TTSException("HTTP session is not available")
 
-                            # Create appropriate exception
-                            exception = create_exception_from_response(
-                                response.status,
-                                error_data,
-                                f"TTS request failed with status {response.status}",
-                            )
+                    async with session.post(url, data=payload) as response:
+                        if response.status == 200:
+                            return await self._process_openai_fm_response(response, request)
+                        try:
+                            error_data = await response.json()
+                        except (json.JSONDecodeError, ValueError):
+                            text = await response.text()
+                            error_data = {"error": {"message": text or "Unknown error"}}
 
-                            # Don't retry for certain errors
-                            if response.status in [400, 401, 403, 404]:
-                                raise exception
+                        exception = create_exception_from_response(
+                            response.status,
+                            error_data,
+                            f"TTS request failed with status {response.status}",
+                        )
 
-                            # For retryable errors, continue to next attempt
-                            if attempt == self.max_retries:
-                                raise exception
+                        if response.status in (400, 401, 403, 404):
+                            raise exception
 
-                            logger.warning(
-                                f"Request failed with status {response.status}, retrying..."
-                            )
-                            continue
+                        if attempt == self.max_retries:
+                            raise exception
+
+                        logger.warning(f"Request failed with status {response.status}, retrying...")
+                        continue
 
                 except asyncio.TimeoutError:
                     if attempt == self.max_retries:
@@ -661,7 +657,7 @@ class AsyncTTSClient:
 
         # Create response object
         metadata = {
-            "response_headers": dict(response.headers),
+            "response_headers": safe_response_headers_for_metadata(response.headers),
             "status_code": response.status,
             "url": str(response.url),
             "service": "openai.fm",

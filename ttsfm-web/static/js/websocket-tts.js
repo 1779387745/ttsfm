@@ -14,6 +14,7 @@ class WebSocketTTSClient {
         this.maxReconnectAttempts = options.maxReconnectAttempts || 5;
         this.reconnectDelay = options.reconnectDelay || 1000;
         this.debug = options.debug || false;
+        this.apiKey = options.apiKey || options.api_key || '';
         
         // Audio context for seamless playback
         this.audioContext = null;
@@ -37,6 +38,11 @@ class WebSocketTTSClient {
         this.log('Connecting to WebSocket server...');
 
         // Initialize Socket.IO connection with explicit configuration
+        const authPayload = {};
+        if (this.apiKey) {
+            authPayload.api_key = this.apiKey;
+        }
+
         this.socket = io(this.socketUrl, {
             path: '/socket.io/',  // Explicit Socket.IO path
             transports: ['polling', 'websocket'],  // Try polling first, then upgrade to websocket
@@ -47,7 +53,8 @@ class WebSocketTTSClient {
             rememberUpgrade: true,  // Remember successful upgrades
             timeout: 20000,  // Connection timeout (20 seconds)
             autoConnect: true,  // Automatically connect on creation
-            forceNew: false  // Reuse existing connection if available
+            forceNew: false,  // Reuse existing connection if available
+            auth: authPayload
         });
 
         // Set up event handlers
@@ -174,14 +181,25 @@ class WebSocketTTSClient {
             // Initialize audio queue for this request
             this.audioQueue.set(requestId, []);
             
-            // Emit generation request
-            this.socket.emit('generate_stream', {
+            const payload = {
                 request_id: requestId,
                 text: text,
                 voice: options.voice || 'alloy',
                 format: options.format || 'mp3',
-                chunk_size: options.chunkSize || 1024
-            });
+                chunk_size: Math.min(1000, Math.max(1, Number(options.chunkSize) || 1000))
+            };
+            if (options.instructions && String(options.instructions).trim()) {
+                payload.instructions = String(options.instructions).trim();
+            }
+            if (options.speed !== undefined && options.speed !== null) {
+                payload.speed = options.speed;
+            }
+            if (this.apiKey) {
+                payload.api_key = this.apiKey;
+            }
+
+            // Emit generation request
+            this.socket.emit('generate_stream', payload);
             
             this.log('Requested speech generation:', requestId);
         });
