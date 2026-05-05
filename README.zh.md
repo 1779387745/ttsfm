@@ -153,3 +153,7 @@ curl -X POST http://localhost:8000/v1/audio/speech \
 ## 许可证
 
 TTSFM 采用 [MIT 许可证](LICENSE) 发布。
+
+## LinuxDo
+
+- [LinuxDo](https://linux.do)
